@@ -1,4 +1,6 @@
+"use client";
 import React, { useState } from "react";
+import Link from "next/link";
 
 // Mock suggestion data structure
 interface Suggestion {
@@ -7,35 +9,60 @@ interface Suggestion {
   suggestion: string;
   status: "pending" | "approved" | "rejected" | "edited";
   editedText?: string;
+  file_path?: string;
+  line_number?: number;
 }
 
-const mockSuggestions: Suggestion[] = [
-  {
-    id: 1,
-    section: "Introduction",
-    suggestion:
-      "Remove mention of agents as_tool. Clarify that agents should only be invoked via handoff.",
-    status: "pending",
-  },
-  {
-    id: 2,
-    section: "Usage",
-    suggestion:
-      "Update usage example to remove as_tool and use handoff instead.",
-    status: "pending",
-  },
-];
+interface UpdateResult {
+  message: string;
+  success: Array<{ suggestion_id: number; file_path: string; message: string }>;
+  errors: Array<{ suggestion_id: number; error: string }>;
+  backups: string[];
+}
 
 const DocUpdatePage: React.FC = () => {
   const [query, setQuery] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [updateResult, setUpdateResult] = useState<UpdateResult | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSubmitted(true);
-    // Simulate backend response
-    setSuggestions(mockSuggestions);
+    setLoading(true);
+    setError(null);
+    setUpdateResult(null);
+
+    try {
+      const response = await fetch(
+        "http://fastapi_backend:8000/doc-updates/suggest",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ query }),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error("Failed to get suggestions");
+      }
+
+      const data = await response.json();
+      const suggestionsWithStatus = data.suggestions.map((s: any) => ({
+        ...s,
+        status: "pending" as const,
+      }));
+
+      setSuggestions(suggestionsWithStatus);
+      setSubmitted(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "An error occurred");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleApprove = (id: number) => {
@@ -70,9 +97,50 @@ const DocUpdatePage: React.FC = () => {
     );
   };
 
-  const handleSave = () => {
-    // TODO: Send approved/edited suggestions to backend
-    alert("Saved! (This would send data to backend)");
+  const handleSave = async () => {
+    setLoading(true);
+    setError(null);
+    setUpdateResult(null);
+
+    try {
+      const approvedSuggestions = suggestions.filter(
+        (s: Suggestion) => s.status === "approved" || s.status === "edited"
+      );
+
+      const response = await fetch("/api/doc-updates/apply", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          suggestions: approvedSuggestions.map((s) => ({
+            id: s.id,
+            section: s.section,
+            suggestion: s.status === "edited" ? s.editedText : s.suggestion,
+            file_path: s.file_path,
+            line_number: s.line_number,
+          })),
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to apply updates");
+      }
+
+      const data = await response.json();
+      setUpdateResult(data);
+
+      // Reset form only if all updates were successful
+      if (data.errors.length === 0) {
+        setQuery("");
+        setSubmitted(false);
+        setSuggestions([]);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "An error occurred");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const canSave = suggestions.some(
@@ -93,20 +161,86 @@ const DocUpdatePage: React.FC = () => {
           onChange={(e) => setQuery(e.target.value)}
           placeholder="E.g. We don't support agents as_tool anymore, other agents should only be invoked via handoff"
           required
+          disabled={loading}
         />
         <button
           type="submit"
-          className="bg-blue-600 text-white px-6 py-2 rounded hover:bg-blue-700 transition"
+          className={`px-6 py-2 rounded text-white transition ${
+            loading
+              ? "bg-gray-400 cursor-not-allowed"
+              : "bg-blue-600 hover:bg-blue-700"
+          }`}
+          disabled={loading}
         >
-          Get Suggestions
+          {loading ? "Getting Suggestions..." : "Get Suggestions"}
         </button>
       </form>
+
+      {error && (
+        <div className="bg-red-50 border border-red-200 rounded p-4 mb-6">
+          <p className="text-red-600">{error}</p>
+        </div>
+      )}
+
+      {updateResult && (
+        <div className="bg-gray-50 border rounded p-6 mb-6">
+          <h2 className="text-xl font-semibold mb-4">Update Results</h2>
+
+          <div className="mb-4">
+            <p className="text-green-600 font-medium">{updateResult.message}</p>
+          </div>
+
+          {updateResult.success.length > 0 && (
+            <div className="mb-4">
+              <h3 className="font-medium text-green-700 mb-2">
+                ✅ Successful Updates:
+              </h3>
+              <ul className="space-y-1">
+                {updateResult.success.map((item, index) => (
+                  <li key={index} className="text-sm text-green-600">
+                    • {item.file_path}: {item.message}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {updateResult.errors.length > 0 && (
+            <div className="mb-4">
+              <h3 className="font-medium text-red-700 mb-2">❌ Errors:</h3>
+              <ul className="space-y-1">
+                {updateResult.errors.map((item, index) => (
+                  <li key={index} className="text-sm text-red-600">
+                    • Suggestion {item.suggestion_id}: {item.error}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {updateResult.backups.length > 0 && (
+            <div>
+              <h3 className="font-medium text-blue-700 mb-2">
+                💾 Backups Created:
+              </h3>
+              <ul className="space-y-1">
+                {updateResult.backups.map((backup, index) => (
+                  <li key={index} className="text-sm text-blue-600">
+                    • {backup.split("/").pop()}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+
       {submitted && (
         <div className="bg-gray-50 border rounded p-6">
           <h2 className="text-xl font-semibold mb-4">Suggestions</h2>
           {suggestions.length === 0 ? (
             <p className="text-gray-500">
-              (Suggestions will appear here after backend integration.)
+              No suggestions found for your query.
             </p>
           ) : (
             <ul className="space-y-6">
@@ -114,6 +248,9 @@ const DocUpdatePage: React.FC = () => {
                 <li key={s.id} className="border rounded p-4 bg-white">
                   <div className="mb-2 text-sm text-gray-500">
                     Section: {s.section}
+                    {s.file_path && (
+                      <span className="ml-2 text-xs">({s.file_path})</span>
+                    )}
                   </div>
                   {s.status === "edited" ? (
                     <textarea
@@ -158,11 +295,15 @@ const DocUpdatePage: React.FC = () => {
           )}
           <button
             type="button"
-            className={`mt-8 w-full py-2 rounded text-white text-lg ${canSave ? "bg-blue-600 hover:bg-blue-700" : "bg-gray-400 cursor-not-allowed"}`}
+            className={`mt-8 w-full py-2 rounded text-white text-lg ${
+              canSave && !loading
+                ? "bg-blue-600 hover:bg-blue-700"
+                : "bg-gray-400 cursor-not-allowed"
+            }`}
             onClick={handleSave}
-            disabled={!canSave}
+            disabled={!canSave || loading}
           >
-            Save Updates
+            {loading ? "Saving..." : "Save Updates"}
           </button>
         </div>
       )}

@@ -4,6 +4,7 @@ from .users import auth_backend, fastapi_users, AUTH_URL_PATH
 from fastapi.middleware.cors import CORSMiddleware
 from .utils import simple_generate_unique_route_id
 from app.routes.items import router as items_router
+from app.routes.doc_updates import router as doc_updates_router
 from app.config import settings
 
 app = FastAPI(
@@ -49,3 +50,6 @@ app.include_router(
 
 # Include items routes
 app.include_router(items_router, prefix="/items")
+
+# Include documentation updates routes
+app.include_router(doc_updates_router)
